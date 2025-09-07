@@ -1,6 +1,7 @@
 package WafkaClient;
 
 import java.util.*;
+import java.util.concurrent.*;
 import java.io.*;
 import java.net.*;
 
@@ -9,16 +10,23 @@ import WafkaClient.Protocol.DataUtils.PartitionData;
 import WafkaClient.Protocol.DataUtils.TopicData;
 
 public class WafkaClient {
+    BlockingQueue pendingMessageQueue = new LinkedBlockingQueue<>();
+    BlockingQueue readyQueue = new LinkedBlockingQueue<>();
+
+    List<TopicData> topics = new ArrayList<>(); // Todo: change to batch
     
     public WafkaClient(){
 
     }
 
     public void sendMessage(){
-
+        // Todo: 
     }
 
     public static void main(String[] args) throws IOException{
+        // In future, this building logic for building headers should
+        // be read from some config file
+        // as for the body, these should be set by a sepparate sender thread
         WafkaPacketBuilder builder = new WafkaPacketBuilder();
         List<TopicData> t = new ArrayList<>();
         List<PartitionData> p = new ArrayList<>();
