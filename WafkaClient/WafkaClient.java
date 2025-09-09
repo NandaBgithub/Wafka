@@ -6,6 +6,7 @@ import java.util.concurrent.*;
 import java.io.*;
 import java.net.*;
 
+import WafkaClient.Partition.RoundRobin;
 import WafkaClient.Protocol.WafkaPacketBuilder;
 import WafkaClient.Protocol.DataUtils.PartitionData;
 import WafkaClient.Protocol.DataUtils.TopicData;
@@ -13,13 +14,17 @@ import WafkaClient.Protocol.DataUtils.TopicData;
 public class WafkaClient {
     BlockingQueue<Message> pendingMessageQueue = new LinkedBlockingQueue<>();
     BlockingQueue<TopicData> readyQueue = new LinkedBlockingQueue<>();
-    int partitionMethod;
+    
+    // Metadata needed for brokers and partitions
+    int partitionMethod = 0;
+    int curBroker = 0;
+    int[] leaderBrokers = {1, 2, 3};
+
     Socket clientSocket = null;
     BufferedReader in = null;
     OutputStream out = null;
     volatile boolean isRunning = false;
     
-
     List<TopicData> topics = new ArrayList<>(); // Todo: change to batch
     
     public WafkaClient(int partitionMethod){
@@ -48,27 +53,36 @@ public class WafkaClient {
     public void loopMessageProcesses() throws InterruptedException{
         while (this.isRunning){
             Message messageToProcess = this.pendingMessageQueue.take();  
-            TopicData topicData = processMessage(messageToProcess);
+            TopicData topicData = this.processMessage(messageToProcess);
             this.readyQueue.add(topicData);
         }
     }
 
-    private static TopicData processMessage(Message message){
-        // Todo: call partitioning algorithms based
-        // on partitionMethod and wrapping the result into a topic data object
-        return null;
+    private TopicData processMessage(Message message){
+        // Partition
+        int broker;
+        if (this.partitionMethod == 0){
+            broker = RoundRobin.assign(curBroker, leaderBrokers);
+        } else {broker = 0;}
+
+        // Wrap current message to a TopicData object and add to readyQueue
+        PartitionData p = new PartitionData(broker, message.getMessage());
+        List<PartitionData> l = new ArrayList<>();
+        l.add(p);
+        TopicData t = new TopicData(message.getTopicName(), l);
+        return t;
     }
 
     // Should be ran by the sender thread
-    public void sendBatchToServer() throws InterruptedException{
+    public void sendBatchToServer() throws InterruptedException, IOException{
         final int BATCHSIZE = 10;
-        // Todo: build the packet using the stuff in protocol folder
-        // then write into the output stream and listen to server's response
+        
         while (this.isRunning){
             // Todo: build the packet should be according to a config file, but for now, 
             // data in wafka client will act as the config settings
             WafkaPacketBuilder builder = new WafkaPacketBuilder();
             List<TopicData> batch = new ArrayList<>();
+            String serverResponse;
 
             TopicData first = readyQueue.take();
             if (first != null){
@@ -76,62 +90,57 @@ public class WafkaClient {
             }
 
             if (!batch.isEmpty()){
-                // Todo: write to output
+                builder.setRequestApiKey((short) 0);
+                builder.setRequestApiVersion((short) 3);
+                builder.setCorrelationId(0);
+                builder.setClientId("testCLient");
+                builder.setTransactionalId("1");
+                builder.setAcks((short) 1);
+                builder.setTimeoutMs(300);
+                builder.setTopicData(batch);
+                byte[] packet = builder.buildPacket();
+                this.out.write(packet);
+                out.flush();
                 batch.clear();
+
+                while ((serverResponse = in.readLine()) != null){
+                    System.out.println(serverResponse);
+                }
             }
         }
     }
 
 
     public static void main(String[] args) throws IOException{
-        // In future, this building logic for building headers should
-        // be read from some config file
-        // as for the body, these should be set by a sepparate sender thread
-        WafkaPacketBuilder builder = new WafkaPacketBuilder();
-        List<TopicData> t = new ArrayList<>();
-        List<PartitionData> p = new ArrayList<>();
-        p.add(new PartitionData(0, "test"));
-        t.add(new TopicData("testTopic", p));
-        builder.setRequestApiKey((short) 0);
-        builder.setRequestApiVersion((short) 3);
-        builder.setCorrelationId(0);
-        builder.setClientId("1234");
-        builder.setTransactionalId("100");
-        builder.setAcks((short) 1);
-        builder.setTimeoutMs(300);
-        builder.setTopicData(t);
-        byte[] packet = builder.buildPacket();
-        System.out.println(Arrays.toString(packet));
+        // open connection to server
+        WafkaClient wafkaClient = new WafkaClient(0);
+        wafkaClient.connect("localhost", 3000);
 
-        String host = "localhost";
-        int port = 3000;
-        String line;
-        OutputStream out = null;
-        BufferedReader in = null;
-        
-        try (
-            Socket wafkaClient = new Socket(host, port);
-        ){
-            out = wafkaClient.getOutputStream();
-            out.write(packet);
-            out.flush();
-
-            in = new BufferedReader(new InputStreamReader(wafkaClient.getInputStream()));
-            
-            while (true){
-                while ((line = in.readLine()) != null){
-                    System.out.println(line);
-                }
+        // open thread for processing messages
+        Thread processor = new Thread(()-> {
+            try {
+                wafkaClient.loopMessageProcesses();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
             }
-            
-            
-        } catch (UnknownHostException e) {
-            e.printStackTrace();
-        } catch (IOException e) {
-            System.out.println("Server disconnected");
-            e.printStackTrace();
-        } finally {
-            out.close();
-        }
+        });
+
+        // open thread for sending messages
+        Thread sender = new Thread(() -> {
+            try {
+                wafkaClient.sendBatchToServer();
+            } catch (InterruptedException | IOException e) {
+                e.printStackTrace();
+            }
+        });
+
+        processor.start();
+        sender.start();
+
+        wafkaClient.sendMessage("delivery", "delivery-truck--ontime--australia-melbourne-1021");
+        wafkaClient.sendMessage("delivery", "delivery-truck--ontime--australia-melbourne-1021");
+        wafkaClient.sendMessage("delivery", "delivery-truck--ontime--australia-melbourne-1021");
+        wafkaClient.sendMessage("delivery", "delivery-truck--ontime--australia-melbourne-1021");
+        wafkaClient.sendMessage("delivery", "delivery-truck--ontime--australia-melbourne-1021");
     }
 }
